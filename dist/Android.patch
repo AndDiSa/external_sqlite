@@ -1,7 +1,7 @@
 diff -r -u -d orig/shell.c ./shell.c
---- orig/shell.c	2017-07-21 01:25:18.136530117 -0700
-+++ ./shell.c	2017-07-21 01:25:55.316260658 -0700
-@@ -52,6 +52,12 @@
+--- orig/shell.c	2018-04-13 17:25:47.747857988 -0700
++++ ./shell.c	2018-04-13 17:25:47.787857731 -0700
+@@ -87,6 +87,12 @@
  #endif
  #include <ctype.h>
  #include <stdarg.h>
@@ -14,10 +14,10 @@ diff -r -u -d orig/shell.c ./shell.c
  
  #if !defined(_WIN32) && !defined(WIN32)
  # include <signal.h>
-@@ -1943,6 +1949,22 @@
-                             readfileFunc, 0, 0);
-     sqlite3_create_function(p->db, "writefile", 2, SQLITE_UTF8, 0,
-                             writefileFunc, 0, 0);
+@@ -10389,6 +10395,23 @@
+                             editFunc, 0, 0);
+     sqlite3_create_function(p->db, "edit", 2, SQLITE_UTF8, 0,
+                             editFunc, 0, 0);
 +
 +    // Begin Android Add
 +    #ifndef NO_ANDROID_FUNCS
@@ -34,55 +34,14 @@ diff -r -u -d orig/shell.c ./shell.c
 +        }
 +    #endif
 +    // End Android Add
-   }
- }
- 
-diff -r -u -d orig/sqlite3.c ./sqlite3.c
---- orig/sqlite3.c	2017-07-21 01:25:18.524527313 -0700
-+++ ./sqlite3.c	2017-07-21 01:25:55.356260367 -0700
-@@ -26474,6 +26474,13 @@
- /* #include "sqliteInt.h" */
- #if SQLITE_OS_UNIX              /* This file is used on unix only */
- 
-+/* Use posix_fallocate() if it is available
-+*/
-+#if !defined(HAVE_POSIX_FALLOCATE) \
-+      && (_XOPEN_SOURCE >= 600 || _POSIX_C_SOURCE >= 200112L)
-+# define HAVE_POSIX_FALLOCATE 1
-+#endif
 +
- /*
- ** There are various methods for file locking used for concurrency
- ** control:
-@@ -27028,7 +27035,12 @@
- #else
-   { "pread64",      (sqlite3_syscall_ptr)0,          0  },
- #endif
-+#ifdef ANDROID
-+// Bionic defines pread64 using off64_t rather than off_t.
-+#define osPread64   ((ssize_t(*)(int,void*,size_t,off64_t))aSyscall[10].pCurrent)
-+#else
- #define osPread64   ((ssize_t(*)(int,void*,size_t,off_t))aSyscall[10].pCurrent)
-+#endif
- 
-   { "write",        (sqlite3_syscall_ptr)write,      0  },
- #define osWrite     ((ssize_t(*)(int,const void*,size_t))aSyscall[11].pCurrent)
-@@ -27046,8 +27058,14 @@
- #else
-   { "pwrite64",     (sqlite3_syscall_ptr)0,          0  },
- #endif
-+#ifdef ANDROID
-+// Bionic defines pwrite64 using off64_t rather than off_t.
-+#define osPwrite64  ((ssize_t(*)(int,const void*,size_t,off64_t))\
-+                    aSyscall[13].pCurrent)
-+#else
- #define osPwrite64  ((ssize_t(*)(int,const void*,size_t,off_t))\
-                     aSyscall[13].pCurrent)
-+#endif
- 
-   { "fchmod",       (sqlite3_syscall_ptr)fchmod,     0  },
- #define osFchmod    ((int(*)(int,mode_t))aSyscall[14].pCurrent)
-@@ -30296,7 +30314,7 @@
+     if( p->openMode==SHELL_OPEN_ZIPFILE ){
+       char *zSql = sqlite3_mprintf(
+          "CREATE VIRTUAL TABLE zip USING zipfile(%Q);", p->zDbFilename);
+diff -r -u -d orig/sqlite3.c ./sqlite3.c
+--- orig/sqlite3.c	2018-12-27 15:39:18.784267281 -0800
++++ ./sqlite3.c	2018-12-27 15:39:18.788267250 -0800
+@@ -34428,7 +34428,7 @@
    SimulateIOError( rc=1 );
    if( rc!=0 ){
      storeLastErrno((unixFile*)id, errno);
@@ -91,7 +50,7 @@ diff -r -u -d orig/sqlite3.c ./sqlite3.c
    }
    *pSize = buf.st_size;
  
-@@ -30332,7 +30350,7 @@
+@@ -34464,7 +34464,7 @@
      struct stat buf;              /* Used to hold return values of fstat() */
     
      if( osFstat(pFile->h, &buf) ){
@@ -100,34 +59,25 @@ diff -r -u -d orig/sqlite3.c ./sqlite3.c
      }
  
      nSize = ((nByte+pFile->szChunk-1) / pFile->szChunk) * pFile->szChunk;
-@@ -30917,7 +30935,7 @@
+@@ -35139,7 +35139,7 @@
      ** with the same permissions.
      */
-     if( osFstat(pDbFd->h, &sStat) && pInode->bProcessLock==0 ){
+     if( osFstat(pDbFd->h, &sStat) ){
 -      rc = SQLITE_IOERR_FSTAT;
 +      rc = unixLogError(SQLITE_IOERR_FSTAT, "fstat", pDbFd->zPath);
        goto shm_open_err;
      }
  
-@@ -32264,7 +32282,7 @@
-       *pUid = sStat.st_uid;
-       *pGid = sStat.st_gid;
-     }else{
--      rc = SQLITE_IOERR_FSTAT;
-+      rc = unixLogError(SQLITE_IOERR_FSTAT, "stat", zDb);
-     }
-   }else if( flags & SQLITE_OPEN_DELETEONCLOSE ){
-     *pMode = 0600;
-@@ -108062,7 +108080,7 @@
+@@ -118054,7 +118054,7 @@
    }
    if( pDb->pSchema->file_format>SQLITE_MAX_FILE_FORMAT ){
      sqlite3SetString(pzErrMsg, db, "unsupported file format");
 -    rc = SQLITE_ERROR;
-+    rc = SQLITE_CORRUPT_BKPT; // Android Change from "rc = SQLITE_ERROR;"
++    rc = SQLITE_CORRUPT_BKPT; // Android Change from "rc = SQLITE_ERROR;";
      goto initone_error_out;
    }
  
-@@ -139799,16 +139817,28 @@
+@@ -152769,13 +152769,25 @@
    ** module with sqlite.
    */
    if( SQLITE_OK==rc 
@@ -152,8 +102,4 @@ diff -r -u -d orig/sqlite3.c ./sqlite3.c
 +#endif
      rc = sqlite3_create_module_v2(
          db, "fts3", &fts3Module, (void *)pHash, hashDestroy
--    );
-+        );
-     if( rc==SQLITE_OK ){
-       rc = sqlite3_create_module_v2(
-           db, "fts4", &fts3Module, (void *)pHash, 0
+     );
